@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { load, save, FILE_TYPES, MAX_PATH_LENGTH, MAX_CONTENT_LENGTH, MAX_NOTE_LENGTH } = require('./store');
+const { buildLedger } = require('./ledger');
 const { ApiError, pickText } = require('./errors');
 
 // 路径只允许字母数字、点、下划线、短横线与斜线，后缀必须是认得的几种
@@ -52,8 +53,19 @@ function lineCountOf(content) {
   return content.split('\n').length;
 }
 
-function withMeta(file) {
-  return { ...file, lineCount: lineCountOf(file.content) };
+function withMeta(file, scanState) {
+  const state = scanState || {};
+  let scanStatus = 'new';
+  if (state.scanned) scanStatus = state.dirty ? 'dirty' : 'clean';
+  return {
+    ...file,
+    lineCount: lineCountOf(file.content),
+    fp: state.currentFp || '',
+    scanStatus,
+    lastSeq: state.lastSeq || 0,
+    scannedAt: state.scannedAt || '',
+    pendingCount: state.pendingCount || 0,
+  };
 }
 
 function sortFiles(list) {
@@ -63,12 +75,18 @@ function sortFiles(list) {
   });
 }
 
-// 文件清单：按类型筛选，再按路径或备注搜索
+// 文件清单：按类型筛选，再按路径或备注搜索。每条带上与最近一轮扫描的对照状态：
+// clean 内容没变、dirty 扫完后改过有待定命中、new 还没被任何一轮扫到
 function listFiles(options) {
   const input = options && typeof options === 'object' ? options : {};
   const type = pickText(input.type);
   const keyword = pickText(input.keyword).toLowerCase();
   const data = load();
+  const ledger = buildLedger(data);
+  const pendingByFile = new Map();
+  ledger.pending.forEach((hit) => {
+    pendingByFile.set(hit.fileId, (pendingByFile.get(hit.fileId) || 0) + 1);
+  });
 
   let list = data.files;
   if (type) list = list.filter((item) => item.type === type);
@@ -78,7 +96,10 @@ function listFiles(options) {
   }
 
   return {
-    files: sortFiles(list).map(withMeta),
+    files: sortFiles(list).map((item) => {
+      const state = ledger.states.get(item.id) || {};
+      return withMeta(item, { ...state, pendingCount: pendingByFile.get(item.id) || 0 });
+    }),
     fileTypes: FILE_TYPES.filter((item) => item !== '全部'),
   };
 }
@@ -87,7 +108,9 @@ function getFile(id) {
   const data = load();
   const found = data.files.find((item) => item.id === id);
   if (!found) throw new ApiError(404, 'FILE_NOT_FOUND', '这个文件不存在或已被移出清单', '');
-  return withMeta(found);
+  const ledger = buildLedger(data);
+  const pendingCount = ledger.pending.filter((hit) => hit.fileId === id).length;
+  return withMeta(found, { ...(ledger.states.get(id) || {}), pendingCount });
 }
 
 function createFile(payload) {
@@ -130,6 +153,16 @@ function deleteFile(id) {
   const index = data.files.findIndex((item) => item.id === id);
   if (index === -1) throw new ApiError(404, 'FILE_NOT_FOUND', '这个文件不存在或已被移出清单', '');
   const [removed] = data.files.splice(index, 1);
+  // 文件没了，挂在它上面还成立的命中没法再核对：记成随文件删除而失效，留在台账里
+  const at = new Date().toISOString();
+  data.hits.forEach((hit) => {
+    if (hit.fileId === removed.id && hit.status === 'active') {
+      hit.status = 'stale';
+      hit.staleSeq = data.scans.reduce((max, item) => Math.max(max, item.seq), 0);
+      hit.staleAt = at;
+      hit.staleReason = 'file-deleted';
+    }
+  });
   save(data);
   return { id: removed.id, path: removed.path };
 }

@@ -101,6 +101,7 @@
               <th>路径</th>
               <th>类型</th>
               <th>行数</th>
+              <th>扫描状态</th>
               <th>备注</th>
               <th>更新时间</th>
               <th>操作</th>
@@ -138,10 +139,38 @@
       </div>
       <p class="scan-meta" id="scan-meta">还没有扫过，点右上角扫一遍</p>
       <p class="scan-warning hidden" id="scan-warning"></p>
+
+      <div class="changed-box hidden" id="changed-box">
+        <h3 id="changed-title">两次扫描之间有文件被改过</h3>
+        <div class="table-wrap">
+          <table class="grid" id="changed-table">
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>类型</th>
+                <th>改动时刻</th>
+                <th>最近扫描</th>
+                <th>因此待定的命中</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="changed-body"></tbody>
+          </table>
+        </div>
+        <p class="empty-tip hidden" id="unscanned-tip"></p>
+      </div>
+
       <div class="summary hidden" id="scan-summary"></div>
+
+      <div class="hit-tabs hidden" id="hit-tabs">
+        <button type="button" class="tab active" data-hit-tab="active">当前仍然成立 <span class="tab-count" id="tab-count-active">0</span></button>
+        <button type="button" class="tab" data-hit-tab="stale">已经失效 <span class="tab-count" id="tab-count-stale">0</span></button>
+        <button type="button" class="tab" data-hit-tab="pending">改动待重扫 <span class="tab-count" id="tab-count-pending">0</span></button>
+      </div>
+
       <div class="table-wrap">
-        <table class="grid">
-          <thead>
+        <table class="grid" id="hit-table">
+          <thead id="hit-head-active">
             <tr>
               <th>规则编码</th>
               <th>级别</th>
@@ -149,12 +178,35 @@
               <th>文件</th>
               <th>行号</th>
               <th>那一行的内容</th>
+              <th>首见 / 最近见</th>
+            </tr>
+          </thead>
+          <thead id="hit-head-stale" class="hidden">
+            <tr>
+              <th>规则编码</th>
+              <th>级别</th>
+              <th>规则名称</th>
+              <th>文件</th>
+              <th>行号</th>
+              <th>当时那一行</th>
+              <th>失效说明</th>
+            </tr>
+          </thead>
+          <thead id="hit-head-pending" class="hidden">
+            <tr>
+              <th>规则编码</th>
+              <th>级别</th>
+              <th>规则名称</th>
+              <th>文件</th>
+              <th>行号</th>
+              <th>扫描时那一行</th>
+              <th>改动情况</th>
             </tr>
           </thead>
           <tbody id="hit-body"></tbody>
         </table>
       </div>
-      <p class="empty-tip hidden" id="hit-empty">这一轮没有命中</p>
+      <p class="empty-tip hidden" id="hit-empty"></p>
     </section>
   </main>
 

@@ -160,6 +160,17 @@ function deleteRule(id) {
   const index = data.rules.findIndex((item) => item.id === id);
   if (index === -1) throw new ApiError(404, 'RULE_NOT_FOUND', '这条规则不存在或已被删除', '');
   const [removed] = data.rules.splice(index, 1);
+  // 规则被删掉后，它名下还成立的命中没有比对依据了：标成失效留在台账里
+  const at = new Date().toISOString();
+  const lastSeq = data.scans.reduce((max, item) => Math.max(max, item.seq), 0);
+  data.hits.forEach((hit) => {
+    if (hit.ruleId === removed.id && hit.status === 'active') {
+      hit.status = 'stale';
+      hit.staleSeq = lastSeq;
+      hit.staleAt = at;
+      hit.staleReason = 'rule-deleted';
+    }
+  });
   save(data);
   return { id: removed.id, code: removed.code, name: removed.name };
 }

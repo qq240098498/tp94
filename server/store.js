@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
@@ -7,7 +8,13 @@ const TEMP_FILE = path.join(DATA_DIR, 'db.json.tmp');
 
 const LEVELS = ['提示', '警告', '错误'];
 const STATUSES = ['启用', '停用'];
+const HIT_STATUS = ['active', 'stale'];
 const FILE_TYPES = ['全部', 'js', 'sh', 'md', 'yml'];
+
+// 文件内容指纹：命中挂在指纹上，内容一变指纹就变，旧命中随即进入待定/失效
+function fingerprintOf(content) {
+  return crypto.createHash('sha256').update(String(content == null ? '' : content)).digest('hex').slice(0, 16);
+}
 const MAX_CODE_LENGTH = 20;
 const MAX_RULE_NAME_LENGTH = 40;
 const MAX_PATTERN_LENGTH = 60;
@@ -335,6 +342,67 @@ function normalizeFile(item, fallbackIndex) {
   };
 }
 
+// 把一轮扫描记成固定结构：seq 是逐轮递增的版本号，命中用它说明“第几版之后失效”。
+// fileFps 记下这一轮范围内每个文件当时的内容指纹，文件上一条命中都不剩时也能据此判状态
+function normalizeScan(item, fallbackIndex) {
+  const source = item && typeof item === 'object' ? item : {};
+  const seq = Number.isFinite(Number(source.seq)) && Number(source.seq) > 0 ? Number(source.seq) : fallbackIndex + 1;
+  const scannedAt = typeof source.scannedAt === 'string' && source.scannedAt ? source.scannedAt : new Date().toISOString();
+  const scan = {
+    seq,
+    scannedAt,
+    level: typeof source.level === 'string' ? source.level : '',
+    fileId: typeof source.fileId === 'string' ? source.fileId : '',
+    ruleId: typeof source.ruleId === 'string' ? source.ruleId : '',
+    rulesUsed: Number.isFinite(Number(source.rulesUsed)) ? Number(source.rulesUsed) : 0,
+    filesInScope: Number.isFinite(Number(source.filesInScope)) ? Number(source.filesInScope) : 0,
+    warning: typeof source.warning === 'string' ? source.warning : '',
+    fileFps: {},
+  };
+  if (source.operator) scan.operator = String(source.operator).slice(0, 40);
+  if (source.fileFps && typeof source.fileFps === 'object') {
+    Object.keys(source.fileFps).forEach((fileId) => {
+      const fp = source.fileFps[fileId];
+      if (typeof fileId === 'string' && typeof fp === 'string' && fp) scan.fileFps[fileId] = fp;
+    });
+  }
+  return scan;
+}
+
+// 把一条历史命中整理成固定结构。status 为 active 表示最近一轮仍然成立，
+// stale 表示重新扫过后同一位置已经没有这条命中，staleSeq 记着是第几版之后失效的
+function normalizeHit(item, fallbackIndex) {
+  const source = item && typeof item === 'object' ? item : {};
+  const firstSeq = Number.isFinite(Number(source.firstSeq)) && Number(source.firstSeq) > 0 ? Number(source.firstSeq) : 0;
+  const lastSeq = Number.isFinite(Number(source.lastSeq)) && Number(source.lastSeq) > 0 ? Number(source.lastSeq) : firstSeq;
+  const hit = {
+    id: typeof source.id === 'string' && source.id ? source.id : `hit-restored-${fallbackIndex + 1}`,
+    ruleId: typeof source.ruleId === 'string' ? source.ruleId : '',
+    code: typeof source.code === 'string' ? source.code : '',
+    ruleName: typeof source.ruleName === 'string' ? source.ruleName : '',
+    level: LEVELS.includes(source.level) ? source.level : LEVELS[0],
+    pattern: typeof source.pattern === 'string' ? source.pattern : '',
+    fileId: typeof source.fileId === 'string' ? source.fileId : '',
+    path: typeof source.path === 'string' ? source.path : '',
+    fileType: typeof source.fileType === 'string' ? source.fileType : '',
+    lineNo: Number.isFinite(Number(source.lineNo)) ? Number(source.lineNo) : 0,
+    lineText: typeof source.lineText === 'string' ? source.lineText : '',
+    fp: typeof source.fp === 'string' ? source.fp : '',
+    firstSeq,
+    lastSeq,
+    firstSeenAt: typeof source.firstSeenAt === 'string' && source.firstSeenAt ? source.firstSeenAt : '',
+    lastSeenAt: typeof source.lastSeenAt === 'string' && source.lastSeenAt ? source.lastSeenAt : source.firstSeenAt || '',
+    status: HIT_STATUS.includes(source.status) ? source.status : HIT_STATUS[0],
+    staleSeq: Number.isFinite(Number(source.staleSeq)) && Number(source.staleSeq) > 0 ? Number(source.staleSeq) : null,
+    staleAt: typeof source.staleAt === 'string' && source.staleAt ? source.staleAt : '',
+  };
+  if (hit.status === 'stale') {
+    hit.staleReason = ['file-deleted', 'rule-deleted'].includes(source.staleReason) ? source.staleReason : 'rescan';
+  }
+  if (source.staleOperator) hit.staleOperator = String(source.staleOperator).slice(0, 40);
+  return hit;
+}
+
 // 整份数据保证规则与文件结构一致，缺编号、缺名称、缺路径的条目一律丢掉
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -368,7 +436,32 @@ function normalize(raw) {
     files.push(file);
   });
 
-  return { rules, files };
+  // 历史扫描轮次，按版本号去重后从小到大排好
+  const rawScans = Array.isArray(source.scans) ? source.scans : [];
+  const seenSeqs = new Set();
+  const scans = [];
+  rawScans.forEach((item, index) => {
+    const scan = normalizeScan(item, index);
+    if (seenSeqs.has(scan.seq)) return;
+    seenSeqs.add(scan.seq);
+    scans.push(scan);
+  });
+  scans.sort((a, b) => a.seq - b.seq);
+
+  // 历史命中台账：编号去重。规则或文件被删掉时，命中先在删除动作里标成失效再保留下来，这里不再丢弃
+  const rawHits = Array.isArray(source.hits) ? source.hits : [];
+  const seenHitIds = new Set();
+  const hits = [];
+  rawHits.forEach((item, index) => {
+    const hit = normalizeHit(item, index);
+    if (!hit.id || !hit.ruleId || !hit.fileId || !hit.lineNo) return;
+    if (seenHitIds.has(hit.id)) return;
+    seenHitIds.add(hit.id);
+    hits.push(hit);
+  });
+  hits.sort((a, b) => (a.lastSeq - b.lastSeq) || (a.id < b.id ? -1 : 1));
+
+  return { rules, files, scans, hits };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
@@ -377,7 +470,7 @@ function load() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return normalize(JSON.parse(raw));
   } catch (err) {
-    const data = { rules: seedRules(), files: seedFiles() };
+    const data = { rules: seedRules(), files: seedFiles(), scans: [], hits: [] };
     save(data);
     return data;
   }
@@ -399,8 +492,12 @@ module.exports = {
   normalize,
   normalizeRule,
   normalizeFile,
+  normalizeScan,
+  normalizeHit,
+  fingerprintOf,
   LEVELS,
   STATUSES,
+  HIT_STATUS,
   FILE_TYPES,
   MAX_CODE_LENGTH,
   MAX_RULE_NAME_LENGTH,

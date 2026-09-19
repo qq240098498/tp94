@@ -93,6 +93,16 @@ app.delete('/api/files/:id', (req, res) => {
   }
 });
 
+// 命中台账：不新扫，只按当前文件内容把在册命中分成当前成立/已失效/待定三类
+app.get('/api/hits', (req, res) => {
+  res.json(api.listHits({
+    level: api.readQuery(req.query, 'level'),
+    ruleId: api.readQuery(req.query, 'ruleId'),
+    fileId: api.readQuery(req.query, 'fileId'),
+    keyword: api.readQuery(req.query, 'keyword'),
+  }));
+});
+
 // 扫一遍：可以只扫某一条规则、某一个文件，也可以只留某个级别
 app.post('/api/scan', (req, res) => {
   try {
@@ -101,6 +111,7 @@ app.post('/api/scan', (req, res) => {
       level: body.level,
       fileId: body.fileId,
       ruleId: body.ruleId,
+      operator: body.operator,
     }));
   } catch (err) {
     sendError(res, err);
