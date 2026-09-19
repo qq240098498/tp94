@@ -139,6 +139,13 @@
       <p class="scan-meta" id="scan-meta">还没有扫过，点右上角扫一遍</p>
       <p class="scan-warning hidden" id="scan-warning"></p>
       <div class="summary hidden" id="scan-summary"></div>
+      <div class="changed-files hidden" id="changed-files"></div>
+      <div class="hit-tabs" id="hit-tabs">
+        <button type="button" data-hit-status="" class="active">全部 <span data-hit-count="total">0</span></button>
+        <button type="button" data-hit-status="active">当前仍然成立 <span data-hit-count="active">0</span></button>
+        <button type="button" data-hit-status="pending">状态待定 <span data-hit-count="pending">0</span></button>
+        <button type="button" data-hit-status="invalidated">已失效 <span data-hit-count="invalidated">0</span></button>
+      </div>
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -148,13 +155,14 @@
               <th>规则名称</th>
               <th>文件</th>
               <th>行号</th>
+              <th>状态</th>
               <th>那一行的内容</th>
             </tr>
           </thead>
           <tbody id="hit-body"></tbody>
         </table>
       </div>
-      <p class="empty-tip hidden" id="hit-empty">这一轮没有命中</p>
+      <p class="empty-tip hidden" id="hit-empty">这一类没有命中条目</p>
     </section>
   </main>
 

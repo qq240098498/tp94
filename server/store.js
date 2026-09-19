@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -8,12 +9,18 @@ const TEMP_FILE = path.join(DATA_DIR, 'db.json.tmp');
 const LEVELS = ['提示', '警告', '错误'];
 const STATUSES = ['启用', '停用'];
 const FILE_TYPES = ['全部', 'js', 'sh', 'md', 'yml'];
+const HIT_STATUSES = ['active', 'pending', 'invalidated'];
 const MAX_CODE_LENGTH = 20;
 const MAX_RULE_NAME_LENGTH = 40;
 const MAX_PATTERN_LENGTH = 60;
 const MAX_NOTE_LENGTH = 200;
 const MAX_PATH_LENGTH = 120;
 const MAX_CONTENT_LENGTH = 4000;
+
+// 文件内容的指纹：命中落盘时带上它，之后内容有没有被改动、改完是否还是那一版，都靠它判断
+function fingerprint(content) {
+  return crypto.createHash('sha256').update(typeof content === 'string' ? content : '', 'utf8').digest('hex');
+}
 
 // 检查规则的初始数据。十二条规则里有两条是停用的，
 // 有一条启用的规则在现有文件里一条命中都没有，用来观察从未命中的规则
@@ -316,7 +323,8 @@ function normalizeRule(item, fallbackIndex) {
   };
 }
 
-// 把单个文件整理成固定结构，类型不在清单里的一律从路径后缀推断
+// 把单个文件整理成固定结构，类型不在清单里的一律从路径后缀推断；
+// 指纹每次都按内容重算，内容改动时刻缺省时先按更新时间算
 function normalizeFile(item, fallbackIndex) {
   const source = item && typeof item === 'object' ? item : {};
   const createdAt = typeof source.createdAt === 'string' && source.createdAt ? source.createdAt : new Date().toISOString();
@@ -324,6 +332,7 @@ function normalizeFile(item, fallbackIndex) {
   const ext = filePath.includes('.') ? filePath.split('.').pop().toLowerCase() : '';
   const type = FILE_TYPES.includes(source.type) && source.type !== '全部' ? source.type : (FILE_TYPES.includes(ext) ? ext : 'js');
   const content = typeof source.content === 'string' ? source.content : '';
+  const updatedAt = typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt;
   return {
     id: typeof source.id === 'string' && source.id ? source.id : `file-restored-${fallbackIndex + 1}`,
     path: filePath,
@@ -331,11 +340,60 @@ function normalizeFile(item, fallbackIndex) {
     content,
     note: typeof source.note === 'string' ? source.note : '',
     createdAt,
-    updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt,
+    updatedAt,
+    contentFingerprint: fingerprint(content),
+    contentChangedAt: typeof source.contentChangedAt === 'string' && source.contentChangedAt ? source.contentChangedAt : updatedAt,
   };
 }
 
-// 整份数据保证规则与文件结构一致，缺编号、缺名称、缺路径的条目一律丢掉
+// 把一轮扫描整理成固定结构，版本号缺省时按位置补上
+function normalizeScan(item, fallbackIndex) {
+  const source = item && typeof item === 'object' ? item : {};
+  const pickCount = (value) => (Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+  return {
+    id: typeof source.id === 'string' && source.id ? source.id : `scan-restored-${fallbackIndex + 1}`,
+    version: Number.isFinite(source.version) && source.version > 0 ? Math.floor(source.version) : fallbackIndex + 1,
+    scannedAt: typeof source.scannedAt === 'string' && source.scannedAt ? source.scannedAt : new Date().toISOString(),
+    rulesUsed: pickCount(source.rulesUsed),
+    filesInScope: pickCount(source.filesInScope),
+    newHits: pickCount(source.newHits),
+    confirmedHits: pickCount(source.confirmedHits),
+    invalidatedHits: pickCount(source.invalidatedHits),
+  };
+}
+
+// 把一条命中整理成固定结构。规则与文件信息是落盘时的快照，之后规则改动不影响历史命中；
+// 失效信息只在 status 为 invalidated 时有意义，失效版本记的是它第几版之后不再成立
+function normalizeHit(item, fallbackIndex) {
+  const source = item && typeof item === 'object' ? item : {};
+  const pickVersion = (value) => (Number.isFinite(value) && value > 0 ? Math.floor(value) : null);
+  const pickTextual = (value) => (typeof value === 'string' ? value : '');
+  const firstSeenAt = pickTextual(source.firstSeenAt) || new Date().toISOString();
+  return {
+    id: typeof source.id === 'string' && source.id ? source.id : `hit-restored-${fallbackIndex + 1}`,
+    ruleId: pickTextual(source.ruleId),
+    code: pickTextual(source.code),
+    ruleName: pickTextual(source.ruleName),
+    level: LEVELS.includes(source.level) ? source.level : LEVELS[0],
+    pattern: pickTextual(source.pattern),
+    fileId: pickTextual(source.fileId),
+    path: pickTextual(source.path),
+    fileType: pickTextual(source.fileType),
+    lineNo: Number.isFinite(source.lineNo) && source.lineNo > 0 ? Math.floor(source.lineNo) : 0,
+    lineText: pickTextual(source.lineText),
+    fileFingerprint: pickTextual(source.fileFingerprint),
+    firstSeenVersion: pickVersion(source.firstSeenVersion),
+    firstSeenAt,
+    lastConfirmedVersion: pickVersion(source.lastConfirmedVersion),
+    lastConfirmedAt: pickTextual(source.lastConfirmedAt) || firstSeenAt,
+    status: source.status === 'invalidated' ? 'invalidated' : 'active',
+    invalidatedVersion: pickVersion(source.invalidatedVersion),
+    invalidatedAt: pickTextual(source.invalidatedAt),
+    invalidatedReason: pickTextual(source.invalidatedReason),
+  };
+}
+
+// 整份数据保证规则、文件、扫描与命中结构一致，缺编号、缺名称、缺路径的条目一律丢掉
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const seed = { rules: seedRules(), files: seedFiles() };
@@ -368,7 +426,29 @@ function normalize(raw) {
     files.push(file);
   });
 
-  return { rules, files };
+  const rawScans = Array.isArray(source.scans) ? source.scans : [];
+  const seenScanIds = new Set();
+  const scans = [];
+  rawScans.forEach((item, index) => {
+    const scan = normalizeScan(item, index);
+    if (!scan.id || seenScanIds.has(scan.id)) return;
+    seenScanIds.add(scan.id);
+    scans.push(scan);
+  });
+  scans.sort((a, b) => a.version - b.version);
+
+  const rawHits = Array.isArray(source.hits) ? source.hits : [];
+  const seenHitIds = new Set();
+  const hits = [];
+  rawHits.forEach((item, index) => {
+    const hit = normalizeHit(item, index);
+    if (!hit.id || !hit.ruleId || !hit.fileId || !hit.lineNo) return;
+    if (seenHitIds.has(hit.id)) return;
+    seenHitIds.add(hit.id);
+    hits.push(hit);
+  });
+
+  return { rules, files, scans, hits };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
@@ -377,7 +457,7 @@ function load() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return normalize(JSON.parse(raw));
   } catch (err) {
-    const data = { rules: seedRules(), files: seedFiles() };
+    const data = normalize({ rules: seedRules(), files: seedFiles() });
     save(data);
     return data;
   }
@@ -399,9 +479,13 @@ module.exports = {
   normalize,
   normalizeRule,
   normalizeFile,
+  normalizeScan,
+  normalizeHit,
+  fingerprint,
   LEVELS,
   STATUSES,
   FILE_TYPES,
+  HIT_STATUSES,
   MAX_CODE_LENGTH,
   MAX_RULE_NAME_LENGTH,
   MAX_PATTERN_LENGTH,

@@ -93,6 +93,20 @@ app.delete('/api/files/:id', (req, res) => {
   }
 });
 
+// 命中清单：持久保存的命中连同三类状态条数、改动待重扫的文件一起给出
+app.get('/api/hits', (req, res) => {
+  try {
+    res.json(api.listHits({
+      status: api.readQuery(req.query, 'status'),
+      ruleId: api.readQuery(req.query, 'ruleId'),
+      fileId: api.readQuery(req.query, 'fileId'),
+      level: api.readQuery(req.query, 'level'),
+    }));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // 扫一遍：可以只扫某一条规则、某一个文件，也可以只留某个级别
 app.post('/api/scan', (req, res) => {
   try {

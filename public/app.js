@@ -12,6 +12,10 @@ const state = {
   editingRuleId: '',
   editingFileId: '',
   lastScan: null,
+  hits: [],
+  hitCounts: { total: 0, active: 0, pending: 0, invalidated: 0 },
+  changedFiles: [],
+  hitStatus: '',
 };
 
 const el = (id) => document.getElementById(id);
@@ -344,13 +348,15 @@ async function submitFile(event) {
     }
     closeFileForm();
     await loadFiles();
+    // 文件内容可能变了，命中清单的状态要跟着刷新
+    await loadHits();
   } catch (err) {
     notify(err.message, 'error');
     markField(err.field);
   }
 }
 
-// 扫一遍，把概要与命中清单都画出来
+// 扫一遍，把概要与命中清单都画出来；清单是持久化的，扫完重新拉一遍
 async function runScan() {
   clearNotice();
   const body = {
@@ -362,13 +368,14 @@ async function runScan() {
     const result = await request('/api/scan', { method: 'POST', body: JSON.stringify(body) });
     state.lastScan = result;
     renderScan(result);
+    await loadHits();
   } catch (err) {
     notify(err.message, 'error');
   }
 }
 
 function renderScan(result) {
-  el('scan-meta').textContent = `扫描时刻 ${formatTime(result.scannedAt)}　参与比对的规则 ${result.rulesUsed} 条（启用共 ${result.enabledRules} 条）　范围里的文件 ${result.filesInScope} 个（清单共 ${result.filesTotal} 个）`;
+  el('scan-meta').textContent = `第 ${result.version} 版　扫描时刻 ${formatTime(result.scannedAt)}　参与比对的规则 ${result.rulesUsed} 条（启用共 ${result.enabledRules} 条）　范围里的文件 ${result.filesInScope} 个（清单共 ${result.filesTotal} 个）　本轮新增 ${result.newHits} 条、确认 ${result.confirmedHits} 条、失效 ${result.invalidatedHits} 条`;
 
   const warningBox = el('scan-warning');
   if (result.warning) {
@@ -390,21 +397,75 @@ function renderScan(result) {
     .map((item) => `${item.path} ${item.count} 条`)
     .join('　') || '没有文件命中';
   summaryBox.innerHTML = `
-    <div class="summary-line"><strong>一共命中 ${result.summary.total} 条</strong>　${escapeHtml(levelText)}</div>
+    <div class="summary-line"><strong>这一轮命中 ${result.summary.total} 条</strong>　${escapeHtml(levelText)}</div>
     <div class="summary-line">按规则：${escapeHtml(ruleText)}</div>
     <div class="summary-line">按文件：${escapeHtml(fileText)}</div>`;
   summaryBox.classList.remove('hidden');
+}
 
+// 命中清单是持久化的：页签条数由服务端给出，明细在页面这一份数据里按状态过滤，两边自然对得上
+async function loadHits() {
+  const payload = await request('/api/hits');
+  state.hits = payload.hits || [];
+  state.hitCounts = payload.counts || { total: 0, active: 0, pending: 0, invalidated: 0 };
+  state.changedFiles = payload.changedFiles || [];
+  renderHitTabs();
+  renderChangedFiles();
+  renderHits();
+}
+
+function renderHitTabs() {
+  document.querySelectorAll('[data-hit-count]').forEach((node) => {
+    node.textContent = state.hitCounts[node.dataset.hitCount] || 0;
+  });
+  document.querySelectorAll('[data-hit-status]').forEach((node) => {
+    node.classList.toggle('active', node.dataset.hitStatus === state.hitStatus);
+  });
+}
+
+// 两次扫描之间内容被改动的文件：哪个文件、改动时刻、多少条命中待重扫
+function renderChangedFiles() {
+  const box = el('changed-files');
+  if (!state.changedFiles.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  const lines = state.changedFiles.map((item) => `<div class="changed-file-line"><span class="mono">${escapeHtml(item.path)}</span>　改动于 ${escapeHtml(formatTime(item.contentChangedAt))}　${item.pendingHits} 条命中待重扫</div>`).join('');
+  box.innerHTML = `<div class="changed-file-head">两次扫描之间有 ${state.changedFiles.length} 个文件内容被改动，重扫之后才能确定上面的命中是否仍然成立：</div>${lines}`;
+  box.classList.remove('hidden');
+}
+
+function statusCell(hit) {
+  if (hit.status === 'invalidated') {
+    const when = hit.invalidatedVersion
+      ? `第 ${hit.invalidatedVersion} 版（${formatTime(hit.invalidatedAt)}）之后失效`
+      : `${formatTime(hit.invalidatedAt)} ${hit.invalidatedReason || '失效'}`;
+    return `<span class="tag st-invalid">已失效</span><div class="status-sub">${escapeHtml(when)}</div>`;
+  }
+  if (hit.status === 'pending') {
+    return `<span class="tag st-pending">状态待定</span><div class="status-sub">文件改动于 ${escapeHtml(formatTime(hit.fileChangedAt))}，重扫后确认</div>`;
+  }
+  return '<span class="tag st-active">当前仍然成立</span>';
+}
+
+function renderHits() {
+  const list = state.hitStatus
+    ? state.hits.filter((hit) => hit.status === state.hitStatus)
+    : state.hits;
   const body = el('hit-body');
-  body.innerHTML = result.hits.map((hit) => `<tr>
+  body.innerHTML = list.map((hit) => `<tr>
       <td class="mono">${escapeHtml(hit.code)}</td>
       <td><span class="tag ${levelClass(hit.level)}">${escapeHtml(hit.level)}</span></td>
       <td>${escapeHtml(hit.ruleName)}</td>
       <td class="mono">${escapeHtml(hit.path)}</td>
       <td class="mono">${hit.lineNo}</td>
+      <td>${statusCell(hit)}</td>
       <td class="mono line-cell">${escapeHtml(hit.lineText)}</td>
     </tr>`).join('');
-  el('hit-empty').classList.toggle('hidden', result.hits.length > 0);
+  const emptyTip = el('hit-empty');
+  emptyTip.textContent = state.hits.length ? '这一类没有命中条目' : '还没有命中记录，点右上角扫一遍';
+  emptyTip.classList.toggle('hidden', list.length > 0);
 }
 
 // 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
@@ -450,6 +511,13 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (node.dataset.hitStatus !== undefined) {
+    state.hitStatus = node.dataset.hitStatus;
+    renderHitTabs();
+    renderHits();
+    return;
+  }
+
   if (node.dataset.fileDelete) {
     clearNotice();
     const found = state.files.find((item) => item.id === node.dataset.fileDelete);
@@ -460,6 +528,8 @@ document.addEventListener('click', async (event) => {
       el('file-preview').classList.add('hidden');
       notify('文件已移出清单', 'ok');
       await loadFiles();
+      // 文件移出清单后，它上面的命中会按失效记，清单要跟着刷新
+      await loadHits();
     } catch (err) {
       notify(err.message, 'error');
     }
@@ -515,9 +585,10 @@ el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
 
-// 页面打开时先把规则与文件都拉一遍，扫描的范围下拉依赖这两份清单
+// 页面打开时先把规则、文件与命中清单都拉一遍，扫描的范围下拉依赖前两份清单
 restoreOperator();
 loadHealth();
 loadRules()
   .then(loadFiles)
+  .then(loadHits)
   .catch((err) => notify(err.message, 'error'));

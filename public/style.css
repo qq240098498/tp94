@@ -383,3 +383,66 @@ label.full input {
   display: flex;
   gap: 10px;
 }
+
+.hit-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.hit-tabs button {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.hit-tabs button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.hit-tabs button span {
+  font-weight: 600;
+}
+
+.st-active {
+  background: #eefaf3;
+  color: var(--ok);
+}
+
+.st-pending {
+  background: var(--warn-bg);
+  color: #8a5a00;
+}
+
+.st-invalid {
+  background: #eef0f3;
+  color: var(--ink-soft);
+}
+
+.status-sub {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  white-space: normal;
+}
+
+.changed-files {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-line);
+  border-radius: 6px;
+  background: var(--warn-bg);
+  color: #8a5a00;
+  font-size: 12.5px;
+}
+
+.changed-file-head {
+  margin-bottom: 4px;
+}
+
+.changed-file-line + .changed-file-line {
+  margin-top: 2px;
+}

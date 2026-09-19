@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { load, save, FILE_TYPES, MAX_PATH_LENGTH, MAX_CONTENT_LENGTH, MAX_NOTE_LENGTH } = require('./store');
+const { load, save, FILE_TYPES, MAX_PATH_LENGTH, MAX_CONTENT_LENGTH, MAX_NOTE_LENGTH, fingerprint } = require('./store');
 const { ApiError, pickText } = require('./errors');
 
 // 路径只允许字母数字、点、下划线、短横线与斜线，后缀必须是认得的几种
@@ -104,6 +104,8 @@ function createFile(payload) {
     note: validateNote(input.note),
     createdAt: now,
     updatedAt: now,
+    contentFingerprint: fingerprint(content),
+    contentChangedAt: now,
   };
   data.files.push(created);
   save(data);
@@ -116,11 +118,20 @@ function updateFile(id, payload) {
   const found = data.files.find((item) => item.id === id);
   if (!found) throw new ApiError(404, 'FILE_NOT_FOUND', '这个文件不存在或已被移出清单', '');
 
+  const now = new Date().toISOString();
   found.path = input.path === undefined ? found.path : validatePath(input.path, data, found.id);
   found.type = extensionOf(found.path);
-  found.content = input.content === undefined ? found.content : validateContent(input.content);
+  if (input.content !== undefined) {
+    const content = validateContent(input.content);
+    // 内容真的变了才换指纹、记改动时刻，只改路径或备注不算内容改动
+    if (content !== found.content) {
+      found.content = content;
+      found.contentFingerprint = fingerprint(content);
+      found.contentChangedAt = now;
+    }
+  }
   found.note = input.note === undefined ? found.note : validateNote(input.note);
-  found.updatedAt = new Date().toISOString();
+  found.updatedAt = now;
   save(data);
   return withMeta(found);
 }
@@ -130,6 +141,15 @@ function deleteFile(id) {
   const index = data.files.findIndex((item) => item.id === id);
   if (index === -1) throw new ApiError(404, 'FILE_NOT_FOUND', '这个文件不存在或已被移出清单', '');
   const [removed] = data.files.splice(index, 1);
+  // 文件移出清单后永远等不到重扫，它上面还没失效的命中当场按失效记
+  const now = new Date().toISOString();
+  data.hits.forEach((hit) => {
+    if (hit.fileId !== id || hit.status === 'invalidated') return;
+    hit.status = 'invalidated';
+    hit.invalidatedVersion = null;
+    hit.invalidatedAt = now;
+    hit.invalidatedReason = '文件已移出清单';
+  });
   save(data);
   return { id: removed.id, path: removed.path };
 }
